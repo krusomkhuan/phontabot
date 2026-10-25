@@ -12,7 +12,8 @@ export async function POST(request:Request):Promise<Response> {
     if(!timingSafeEqual(expected,Buffer.from(envelope.signature,'hex')))return new Response(null,{status:401});
     const p=JSON.parse(envelope.payload);
     if(p.groupId!==group||!Number.isFinite(p.sentAt)||Math.abs(Date.now()-p.sentAt)>300000||typeof p.text!=='string'||!p.text.trim()||p.text.length>4500||!/^[a-f0-9-]{36}$/.test(p.retryKey||''))return Response.json({ok:false},{status:400});
-    const result=await fetch('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`,'X-Line-Retry-Key':p.retryKey},body:JSON.stringify({to:group,messages:[{type:'text',text:p.text,quickReply:{items:[{type:'action',action:{type:'message',label:'ดูคำถามค้าง',text:'/คำถามค้าง'}}]}}]}),signal:AbortSignal.timeout(6000)});
+    const messages=[{type:'text',text:p.text},{type:'template',altText:'เปิดรายการคำถามค้าง',template:{type:'buttons',text:'แตะเพื่อดูคำถามค้างและเปิดแบบฟอร์มเพิ่มคำตอบ',actions:[{type:'message',label:'ดูคำถามค้าง',text:'/คำถามค้าง'}]}}];
+    const result=await fetch('https://api.line.me/v2/bot/message/push',{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`,'X-Line-Retry-Key':p.retryKey},body:JSON.stringify({to:group,messages}),signal:AbortSignal.timeout(6000)});
     if(result.ok||result.status===409)return Response.json({ok:true});
     console.error(JSON.stringify({service:'daily-summary',status:result.status}));
     return Response.json({ok:false},{status:502});

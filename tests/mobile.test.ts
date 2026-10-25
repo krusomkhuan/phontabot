@@ -17,7 +17,7 @@ test('mobile submission stores a draft and asks LINE for confirmation, never wri
   globalThis.fetch=async(url,options)=>{
     const body=JSON.parse(String(options?.body));
     if(String(url).includes('script.google.com')){const p=JSON.parse(body.payload);assert.equal(p.action,'draft');assert.equal(p.adminUserId,'Ua');drafts++;return Response.json({ok:true,draft:{id:'00000000-0000-4000-8000-000000000001',question:'คำถาม',answer:'คำตอบ'}});}
-    pushes++;assert.equal(body.to,'Cg');assert.ok(body.messages[0].quickReply.items[0].action.data.startsWith('approve:'));return new Response(null,{status:200});
+    pushes++;assert.equal(body.to,'Cg');assert.ok(body.messages[1].template.actions[0].data.startsWith('approve:'));return new Response(null,{status:200});
   };
   const request=(extra:object={})=>new Request('https://example.org/api/support-form',{method:'POST',body:JSON.stringify({action:'draft',token,question:'คำถาม',answer:'คำตอบ',confirmed:true,...extra})});
   try{
