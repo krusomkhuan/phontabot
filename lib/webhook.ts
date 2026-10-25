@@ -29,7 +29,7 @@ export async function handleWebhook(request: Request): Promise<Response> {
       const faq=await getFAQ();
       const remaining=7500-(Date.now()-started);
       if (remaining>100 && event.message.text.length<=5000) text=await answerQuestion(event.message.text,faq,remaining);
-    } catch(error) {logError('answer',error);}
+    } catch(error) {logError('answer',error,[event.message.text]);}
     try {await client.replyMessage(event.replyToken,{type:'text',text});return true;}
     catch(error) {logError('line',error);return false;}
   }));

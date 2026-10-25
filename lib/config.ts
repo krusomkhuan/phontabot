@@ -25,8 +25,35 @@ export function errorReason(error: unknown): string {
   if (/INVALID_ARGUMENT/i.test(message)) return 'INVALID_REQUEST';
   return 'UNKNOWN';
 }
-export function logError(service: string, error: unknown) {
-  const e = error as { status?: number; statusCode?: number; name?: string };
-  console.error(JSON.stringify({service,status:e?.status ?? e?.statusCode ?? null,type:e?.name ?? 'Error',reason:errorReason(error)}));
+export function safeProviderMessage(error: unknown, privateText: string[] = []): string | null {
+  let message = '';
+  try {
+    const parsed = JSON.parse(String((error as {message?: string})?.message ?? ''));
+    message = typeof parsed.error?.message === 'string' ? parsed.error.message : '';
+  } catch { return null; }
+  // Redact credentials and user input before retaining only the provider's message.
+  for (const value of [...privateText, ...Object.values(process.env).filter((v): v is string=>Boolean(v && v.length>=8))]) {
+    if (value) message=message.split(value).join('[REDACTED]');
+  }
+  message=message.replace(/AIza[\w-]+/g,'[REDACTED]').replace(/https?:\/\/\S+/g,'[URL]').slice(0,600);
+  // Keep known labels alongside the redacted diagnostic.
+  const patterns: [RegExp,string][] = [
+    [/API key not valid/i, 'API key not valid'],
+    [/Request contains an invalid argument/i, 'Request contains an invalid argument'],
+    [/API key expired/i, 'API key expired'],
+    [/API key not found/i, 'API key not found'],
+    [/API key.*deleted/i, 'API key deleted'],
+    [/API key.*blocked/i, 'API key blocked'],
+    [/not available in your country/i, 'API unavailable in account country'],
+    [/model[^\n]*not found/i, 'Requested model not found'],
+    [/model[^\n]*not supported/i, 'Requested model not supported'],
+    [/API keys are not supported/i, 'API key authentication unsupported'],
+  ];
+  const summary = patterns.find(([pattern])=>pattern.test(message))?.[1] ?? null;
+  const fields = ['temperature','maxOutputTokens','systemInstruction','thinkingConfig','contents','model','api_key','apiKey'].filter(field=>message.includes(field));
+  return JSON.stringify({summary,fields,message});
 }
-
+export function logError(service: string, error: unknown, privateText: string[] = []) {
+  const e = error as { status?: number; statusCode?: number; name?: string };
+  console.error(JSON.stringify({service,status:e?.status ?? e?.statusCode ?? null,type:e?.name ?? 'Error',reason:errorReason(error),diagnostic:safeProviderMessage(error,privateText)}));
+}
