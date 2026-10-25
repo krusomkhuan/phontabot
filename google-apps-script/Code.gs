@@ -55,10 +55,18 @@ function support_(p,props) {
   const ss=SpreadsheetApp.openById(props.getProperty('LOG_SPREADSHEET_ID'));
   const log=ss.getSheetByName(LOG_TAB);
   const data=log.getLastRow()>1?log.getRange(2,1,log.getLastRow()-1,7).getValues():[];
+  if(p.action==='today') {
+    const day=Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd'),daily=ss.getSheetByName(DAY_TAB);
+    const rows=daily.getLastRow()>1?daily.getRange(2,1,daily.getLastRow()-1,6).getValues():[];
+    const row=rows.find(r=>String(r[0])===day)||[day,0,0,0];
+    const pending=data.filter(r=>r[4]==='รอเพิ่มข้อมูล'&&r[5]==='ไม่พบคำตอบที่ตรง').length;
+    return {ok:true,reply:'สรุปวันนี้ '+day+'\nไม่พบคำตอบ '+row[1]+' ครั้ง\nระบบขัดข้อง '+row[2]+' ครั้ง\nคำถามใหม่ '+row[3]+' เรื่อง\nยังรอคำตอบทั้งหมด '+pending+' เรื่อง\n\nส่ง /คำถามค้าง เพื่อเปิดแบบฟอร์มเพิ่มคำตอบค่ะ'};
+  }
+  if(['get','draft','approve','reject'].includes(p.action))return mobile_(p,props,ss,data);
   if(p.action==='list') {
     const pending=data.filter(r=>r[4]==='รอเพิ่มข้อมูล'&&r[5]==='ไม่พบคำตอบที่ตรง').sort((a,b)=>Number(b[3])-Number(a[3])).slice(0,5);
     if(!pending.length)return {ok:true,reply:'ไม่มีคำถามรอเพิ่มข้อมูลค่ะ'};
-    return {ok:true,reply:'คำถามค้างที่มีคนถามบ่อย (สูงสุด 5 ข้อ)\n'+pending.map(r=>'รหัส '+String(r[6]).slice(0,12)+'\n'+String(r[2]).slice(0,300)+'\nถามแล้ว '+r[3]+' ครั้ง').join('\n\n')+'\n\nเพิ่มคำตอบด้วย\n/ตอบ รหัส | คำถามสำหรับ FAQ | คำตอบที่ตรวจสอบแล้ว\nคำถามและคำตอบจะเผยแพร่ใน FAQ สาธารณะ กรุณาตัดข้อมูลส่วนบุคคลก่อนส่งค่ะ'};
+    return {ok:true,items:pending.map(r=>({id:String(r[6]).slice(0,12),question:String(r[2]),count:Number(r[3])})),reply:'คำถามค้างที่มีคนถามบ่อย (สูงสุด 5 ข้อ)\n'+pending.map(r=>'รหัส '+String(r[6]).slice(0,12)+'\n'+String(r[2]).slice(0,300)+'\nถามแล้ว '+r[3]+' ครั้ง').join('\n\n')+'\n\nเพิ่มคำตอบด้วย\n/ตอบ รหัส | คำถามสำหรับ FAQ | คำตอบที่ตรวจสอบแล้ว\nคำถามและคำตอบจะเผยแพร่ใน FAQ สาธารณะ กรุณาตัดข้อมูลส่วนบุคคลก่อนส่งค่ะ'};
   }
   if(p.action!=='answer'||!/^[a-f0-9]{12}$/.test(p.id)||typeof p.question!=='string'||!p.question.trim()||p.question.length>500||typeof p.answer!=='string'||!p.answer.trim()||p.answer.length>4000)return {ok:false};
   const matches=data.map((r,index)=>({r,index})).filter(x=>String(x.r[6]).startsWith(p.id));
@@ -82,7 +90,40 @@ function support_(p,props) {
   // Retry after an interrupted write finds the existing FAQ, so no duplicate row is appended.
   log.getRange(target.index+2,5).setValue('เพิ่มคำตอบแล้ว');
   SpreadsheetApp.flush();
-  return {ok:true,reply:'เพิ่มคำตอบลง Google Sheet FAQ แล้วค่ะ\nคำถาม: '+p.question.trim()+'\nน้องโพนต้าจะอ่านข้อมูลใหม่ภายในประมาณ 60 วินาที\n'+faqFile.getUrl()};
+  return {ok:true,saved:true,reply:'เพิ่มคำตอบลง Google Sheet FAQ แล้วค่ะ\nคำถาม: '+p.question.trim()+'\nน้องโพนต้าจะอ่านข้อมูลใหม่ภายในประมาณ 60 วินาที\n'+faqFile.getUrl()};
+}
+
+function mobile_(p,props,ss,data) {
+  if(p.action==='get'||p.action==='draft') {
+    if(!/^[a-f0-9]{12}$/.test(p.id))return {ok:false};
+    const matches=data.filter(r=>String(r[6]).startsWith(p.id)&&r[5]==='ไม่พบคำตอบที่ตรง'&&r[4]==='รอเพิ่มข้อมูล');
+    if(matches.length!==1)return {ok:true,error:'รายการนี้ปิดแล้วหรือไม่พบ กรุณารับลิงก์ใหม่จาก LINE'};
+    if(p.action==='get')return {ok:true,question:String(matches[0][2])};
+    if(typeof p.question!=='string'||!p.question.trim()||p.question.length>500||typeof p.answer!=='string'||!p.answer.trim()||p.answer.length>4000)return {ok:false};
+    const drafts=ensureTab_(ss,'ร่างคำตอบ',['รหัสร่าง','บัญชีผู้ดูแล','กลุ่ม','รหัสคำถาม','คำถาม FAQ','คำตอบ','หมดอายุ','สถานะ']);
+    const rows=drafts.getLastRow()>1?drafts.getRange(2,1,drafts.getLastRow()-1,8).getValues():[];
+    const pending=rows.find(r=>r[1]===p.adminUserId&&r[2]===p.groupId&&r[3]===p.id&&Number(r[6])>Date.now()&&r[7]==='รอยืนยัน');
+    if(pending) {
+      if(pending[4]!==p.question.trim()||pending[5]!==p.answer.trim())return {ok:true,error:'มีร่างรอยืนยันใน LINE อยู่แล้ว กรุณายืนยันหรือยกเลิกร่างเดิมก่อนแก้ไข'};
+      return {ok:true,draft:{id:pending[0],question:pending[4],answer:pending[5]}};
+    }
+    const id=Utilities.getUuid(),question=p.question.trim(),answer=p.answer.trim();
+    const write=UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/'+ss.getId()+':batchUpdate',{method:'post',contentType:'application/json',headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},payload:JSON.stringify({requests:[append_(drafts,[id,p.adminUserId,p.groupId,p.id,question,answer,Date.now()+30*60000,'รอยืนยัน'])]}),muteHttpExceptions:true});
+    if(write.getResponseCode()!==200)throw new Error('draft-write-failed');
+    return {ok:true,draft:{id:id,question:question,answer:answer}};
+  }
+  const drafts=ss.getSheetByName('ร่างคำตอบ');
+  if(!drafts||drafts.getLastRow()<2)return {ok:true,reply:'ไม่พบร่างคำตอบค่ะ'};
+  const rows=drafts.getRange(2,1,drafts.getLastRow()-1,8).getValues();
+  const index=rows.findIndex(r=>r[0]===p.draftId&&r[1]===p.adminUserId&&r[2]===p.groupId);
+  if(index<0)return {ok:true,reply:'เฉพาะผู้ดูแลที่ส่งร่างนี้เท่านั้นที่ยืนยันหรือยกเลิกได้ค่ะ'};
+  const row=rows[index];
+  if(row[7]==='บันทึกแล้ว')return {ok:true,reply:'ร่างนี้เพิ่มลง FAQ แล้วค่ะ ไม่บันทึกซ้ำ'};
+  if(row[7]!=='รอยืนยัน'||Number(row[6])<Date.now())return {ok:true,reply:'ร่างนี้หมดอายุหรือถูกยกเลิกแล้ว กรุณาเปิดแบบฟอร์มใหม่ค่ะ'};
+  if(p.action==='reject'){drafts.getRange(index+2,8).setValue('ยกเลิก');return {ok:true,reply:'ยกเลิกร่างแล้วค่ะ สามารถเปิดแบบฟอร์มเพื่อกรอกใหม่ได้'};}
+  const result=support_({action:'answer',adminUserId:p.adminUserId,groupId:p.groupId,id:row[3],question:row[4],answer:row[5]},props);
+  if(result.saved){drafts.getRange(index+2,8).setValue('บันทึกแล้ว');SpreadsheetApp.flush();}
+  return result;
 }
 
 function doPost(e) {
@@ -96,7 +137,7 @@ function doPost(e) {
     if (envelope.signature!==sig) return json_({ok:false});
     const p=JSON.parse(envelope.payload);
     if(!Number.isFinite(p.sentAt)||Math.abs(Date.now()-p.sentAt)>300000)return json_({ok:false});
-    if(p.action==='list'||p.action==='answer') {
+    if(['list','answer','today','get','draft','approve','reject'].includes(p.action)) {
       lock.waitLock(10000);
       return json_(support_(p,props));
     }
@@ -151,9 +192,13 @@ function sendDailySummary() {
     if (!secret||!group) throw new Error('missing-summary-config');
     const ss=SpreadsheetApp.openById(p.getProperty('LOG_SPREADSHEET_ID'));
     const daily=ss.getSheetByName(DAY_TAB);
-    if(daily.getLastRow()<2)return;
     const today=Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd');
-    const rows=daily.getRange(2,1,daily.getLastRow()-1,6).getValues();
+    const rows=daily.getLastRow()>1?daily.getRange(2,1,daily.getLastRow()-1,6).getValues():[];
+    const yesterday=Utilities.formatDate(new Date(Date.now()-86400000),TZ,'yyyy-MM-dd');
+    if(!rows.some(r=>String(r[0])===yesterday)) {
+      const empty=[yesterday,0,0,0,'',Utilities.getUuid()];
+      daily.appendRow([literal_(yesterday),0,0,0,'',empty[5]]);rows.push(empty);
+    }
     for(let index=0;index<rows.length;index++) {
       const row=rows[index], day=String(row[0]);
       if(day>=today||row[4])continue;

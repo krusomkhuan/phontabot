@@ -4,6 +4,7 @@ import { getFAQ } from './sheet';
 import { findAnswer } from './faq';
 import { recordUnanswered, supportCommand, type FailureReason } from './unanswered';
 import { createHash } from 'node:crypto';
+import { approveMobile } from './support-mobile';
 export async function handleWebhook(request: Request): Promise<Response> {
   let secret: string;
   try {secret=required('CHANNEL_SECRET');} catch {console.error('missing:CHANNEL_SECRET');return Response.json({error:'Configuration missing'},{status:500});}
@@ -20,9 +21,16 @@ export async function handleWebhook(request: Request): Promise<Response> {
   } catch {return new Response(null,{status:400});}
   if (!events.length) return Response.json({ok:true});
   const texts=events.filter(e=>e.type==='message' && e.message?.type==='text' && e.replyToken);
-  if (!texts.length) return Response.json({ok:true});
+  const postbacks=events.filter(e=>e.type==='postback' && e.replyToken);
+  if (!texts.length&&!postbacks.length) return Response.json({ok:true});
   try {required('CHANNEL_ACCESS_TOKEN');} catch(error) {console.error(error instanceof Error ? error.message : 'missing-config');return new Response(null,{status:500});}
   const client=new Client({channelAccessToken:required('CHANNEL_ACCESS_TOKEN'),httpConfig:{timeout:2000}});
+  const approvals=await Promise.all(postbacks.map(async e=>{
+    if(e.type!=='postback'||e.source.type!=='group')return true;
+    const reply=await approveMobile(e.source.groupId,e.source.userId,e.postback.data);
+    if(!reply)return true;
+    try{await client.replyMessage(e.replyToken,{type:'text',text:reply});return true;}catch(error){logError('line',error);return false;}
+  }));
   const results=await Promise.all(texts.map(async event=>{
     if (event.type!=='message' || event.message.type!=='text') return true;
     if(event.message.text.trim()==='/my-id') {
@@ -59,5 +67,5 @@ export async function handleWebhook(request: Request): Promise<Response> {
     return replied;
   }));
   // Acknowledge delivery to avoid replaying replies for already processed events.
-  return Response.json({ok:true,replyFailures:results.filter(x=>!x).length});
+  return Response.json({ok:true,replyFailures:[...results,...approvals].filter(x=>!x).length});
 }

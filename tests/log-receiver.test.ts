@@ -9,14 +9,14 @@ test('Google receiver aggregates questions atomically, deduplicates events, reje
     {id:2,name:'สรุปรายวัน',rows:[['day','unknown','error','new','sent','retry']]},
     {id:3,name:'ป้องกันนับซ้ำ',rows:[['event']]},
     {id:4,name:'ชีต1',rows:[['หมวดหมู่','คำถาม','คำตอบ']]}];
-  const sheet=(table:any):any=>({getSheetId:()=>table.id,getLastRow:()=>table.rows.length,getDataRange:()=>({getValues:()=>table.rows}),
+  const sheet=(table:any):any=>({getSheetId:()=>table.id,getLastRow:()=>table.rows.length,getDataRange:()=>({getValues:()=>table.rows}),setFrozenRows:()=>{},appendRow:(r:any[])=>table.rows.push(r),
     getRange:(row:number,col:number,count=1,width=1)=>({getValue:()=>table.rows[row-1]?.[col-1],
       setValue:(v:any)=>{table.rows[row-1][col-1]=v;},
       getValues:()=>table.rows.slice(row-1,row-1+count).map((r:any[])=>r.slice(col-1,col-1+width)),
       createTextFinder:(needle:string)=>({matchEntireCell:()=>({findNext:()=>{
         const index=table.rows.findIndex((r:any[],i:number)=>i>=row-1&&i<row-1+count&&String(r[col-1])===needle);
         return index<0?null:{getRow:()=>index+1};}})})})});
-  const ss={getSheetByName:(n:string)=>sheet(tables.find(t=>t.name===n)),getId:()=>'private-file',getUrl:()=>'https://docs.google.com/spreadsheets/d/private-file'};
+  const ss={getSheetByName:(n:string)=>{const t=tables.find(t=>t.name===n);return t?sheet(t):null;},insertSheet:(name:string)=>{const t={name,id:tables.length+1,rows:[]};tables.push(t);return sheet(t);},getId:()=>'private-file',getUrl:()=>'https://docs.google.com/spreadsheets/d/private-file'};
   const faqFile={getSheets:()=>[sheet(tables[3])],getUrl:()=>'https://docs.google.com/spreadsheets/d/faq-file'};
   const props:any={LOG_SECRET:'test-secret',LOG_SPREADSHEET_ID:'private-file',LINE_CHANNEL_ACCESS_TOKEN:'test-token',ADMIN_GROUP_ID:'Ctest',ADMIN_USER_IDS:'Uadmin',FAQ_SPREADSHEET_ID:'faq-file',FAQ_SHEET_ID:'4'};
   let writes=0,pushes=0,locked=false,failWrite=false;
@@ -63,6 +63,7 @@ test('Google receiver aggregates questions atomically, deduplicates events, reje
   assert.equal(command('list','Ustranger').ok,false);
   assert.equal(command('list','Uadmin','Cother').ok,false);
   assert.ok(command('list').reply.includes('ถามแล้ว 2 ครั้ง'));
+  assert.ok(command('today').reply.includes('ยังรอคำตอบทั้งหมด'));
   const item={id:tables[0].rows[1][6].slice(0,12),question:'คำถามใหม่',answer:'คำตอบที่ตรวจสอบแล้ว'};
   assert.equal(command('answer','Ustranger','Ctest',item).ok,false);assert.equal(tables[3].rows.length,1);
   assert.ok(command('answer','Uadmin','Ctest',item).reply.includes('เพิ่มคำตอบลง Google Sheet'));
@@ -70,5 +71,14 @@ test('Google receiver aggregates questions atomically, deduplicates events, reje
   assert.equal(tables[0].rows[1][4],'เพิ่มคำตอบแล้ว');
   command('answer','Uadmin','Ctest',item);assert.equal(tables[3].rows.length,2);
   assert.ok(command('answer','Uadmin','Ctest',{...item,answer:'คำตอบขัดกัน'}).reply.includes('คำตอบอื่น'));
+  send('6','เรียนวันหยุดได้ไหม');
+  const pendingKey=tables[0].rows[3][6].slice(0,12);
+  const draftInput={id:pendingKey,question:'เรียนวันหยุดได้ไหม',answer:'คำตอบที่ตรวจสอบแล้ว'};
+  const d=command('draft','Uadmin','Ctest',draftInput);assert.ok(d.draft);assert.equal(tables[3].rows.length,2,'draft must not publish');
+  assert.equal(command('draft','Uadmin','Ctest',draftInput).draft.id,d.draft.id);
+  props.ADMIN_USER_IDS='Uadmin,Uother';
+  assert.ok(command('approve','Uother','Ctest',{draftId:d.draft.id}).reply.includes('เฉพาะผู้ดูแล'));assert.equal(tables[3].rows.length,2);
+  assert.ok(command('approve','Uadmin','Ctest',{draftId:d.draft.id}).saved);assert.equal(tables[3].rows.length,3);
+  command('approve','Uadmin','Ctest',{draftId:d.draft.id});assert.equal(tables[3].rows.length,3,'replayed approval must not duplicate FAQ');
   assert.equal(locked,false);
 });

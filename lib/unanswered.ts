@@ -1,11 +1,13 @@
 import { createHash, createHmac } from 'node:crypto';
+import { formToken } from './support-mobile';
 
 export type FailureReason = 'no_match' | 'system_error';
 export async function supportCommand(groupId:string, userId:string|undefined, text:string):Promise<string|null> {
   const admins=(process.env.ADMIN_USER_IDS||'').split(',').map(x=>x.trim()).filter(Boolean);
   if (!userId || !admins.includes(userId) || !process.env.ADMIN_GROUP_ID || groupId!==process.env.ADMIN_GROUP_ID.trim()) return null;
-  let action:'list'|'answer'; let id='',question='',answer='';
+  let action:'list'|'answer'|'today'; let id='',question='',answer='';
   if (text.trim()==='/คำถามค้าง') action='list';
+  else if (['/สรุปวันนี้','สรุปวันนี้'].includes(text.trim())) action='today';
   else if (text.trim().startsWith('/ตอบ ')) {
     const parts=text.trim().slice(5).split('|').map(s=>s.trim());
     if (parts.length!==3 || !/^[a-f0-9]{12}$/.test(parts[0]) || !parts[1] || !parts[2] || parts[1].length>500 || parts[2].length>4000)
@@ -24,6 +26,13 @@ export async function supportCommand(groupId:string, userId:string|undefined, te
         const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload,signature}),signal:AbortSignal.timeout(2500),cache:'no-store'});
         const data=await response.json();
         if(!response.ok||data.ok!==true||typeof data.reply!=='string')throw new Error();
+        if(action==='list'&&Array.isArray(data.items)&&data.items.length) {
+          const links=data.items.slice(0,5).map((item:{id:string;question:string;count:number})=>{
+            const token=formToken({id:item.id,adminUserId:userId,groupId,expires:Date.now()+30*60000});
+            return `${item.question.slice(0,220)}\nถามแล้ว ${item.count} ครั้ง\nกรอกคำตอบบนมือถือ:\nhttps://phonta.vercel.app/support/answer#${token}`;
+          });
+          return ('คำถามที่รอคำตอบ (สูงสุด 5 ข้อ)\n\n'+links.join('\n\n')+'\n\nแตะลิงก์ กรอกคำตอบ แล้วกลับมายืนยันใน LINE ค่ะ').slice(0,4500);
+        }
         return data.reply.slice(0,4500);
       } catch {if(attempt===1)throw new Error();}
     }
