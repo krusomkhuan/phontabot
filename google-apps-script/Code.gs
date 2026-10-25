@@ -1,0 +1,127 @@
+// Paste into a NEW standalone Apps Script project. Never attach this to the public FAQ.
+const LOG_TAB = 'คำถามที่ยังตอบไม่ได้';
+const DAY_TAB = 'สรุปรายวัน';
+const EVENT_TAB = 'ป้องกันนับซ้ำ';
+const TZ = 'Asia/Bangkok';
+
+function setup() {
+  const props = PropertiesService.getScriptProperties();
+  let id = props.getProperty('LOG_SPREADSHEET_ID');
+  if (!id) {
+    const file = SpreadsheetApp.create('น้องโพนต้า — บันทึกคำถามส่วนตัว');
+    id = file.getId();
+    props.setProperty('LOG_SPREADSHEET_ID', id);
+  }
+  if (!props.getProperty('LOG_SECRET')) props.setProperty('LOG_SECRET', Utilities.getUuid()+Utilities.getUuid());
+  const ss = SpreadsheetApp.openById(id);
+  ss.setSpreadsheetTimeZone(TZ);
+  ensureTab_(ss, LOG_TAB, ['วันเวลาครั้งแรก','วันเวลาล่าสุด','คำถาม','จำนวนครั้ง','สถานะ','สาเหตุ','รหัสคำถาม']);
+  ensureTab_(ss, DAY_TAB, ['วันที่','ไม่พบคำตอบที่ตรง','ระบบขัดข้อง','คำถามใหม่','แจ้งสรุปแล้ว','รหัสส่ง LINE']);
+  ensureTab_(ss, EVENT_TAB, ['รหัสเหตุการณ์']);
+  ss.getSheetByName(EVENT_TAB).hideSheet();
+  const sheet = ss.getSheetByName(LOG_TAB);
+  sheet.getRange('A:B').setNumberFormat('dd/MM/yyyy HH:mm:ss');
+  sheet.getRange('E2:E').setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(['รอเพิ่มข้อมูล','เพิ่มคำตอบแล้ว','รอแก้ไขระบบ','แก้ไขระบบแล้ว'],true).build());
+  sheet.hideColumns(7);
+  sheet.setColumnWidth(3,480);
+  sheet.getRange('C:C').setWrap(true);
+  console.log('ไฟล์บันทึกส่วนตัว: '+ss.getUrl());
+  console.log('คัดลอก LOG_SECRET จาก Project Settings > Script properties ไป Vercel โดยไม่ส่งในแชต');
+}
+
+function ensureTab_(ss, name, headers) {
+  const s=ss.getSheetByName(name)||ss.insertSheet(name);
+  if (s.getLastRow()===0) s.appendRow(headers);
+  s.setFrozenRows(1);
+  return s;
+}
+function json_(value) {return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON);}
+function hex_(bytes) {return bytes.map(b=>('0'+((b+256)%256).toString(16)).slice(-2)).join('');}
+function digest_(text) {return hex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,text,Utilities.Charset.UTF_8));}
+function reasonLabel_(reason) {return reason==='no_match'?'ไม่พบคำตอบที่ตรง':'ระบบขัดข้อง';}
+// Prefix text, so a question beginning with '=' can never become a Sheet formula.
+function literal_(text) {return "'"+String(text);}
+function cell_(value) {
+  return {userEnteredValue:typeof value==='number'?{numberValue:value}:{stringValue:String(value)}};
+}
+function append_(sheet,values) {return {appendCells:{sheetId:sheet.getSheetId(),rows:[{values:values.map(cell_)}],fields:'userEnteredValue'}};}
+function put_(sheet,row,col,value) {return {updateCells:{start:{sheetId:sheet.getSheetId(),rowIndex:row-1,columnIndex:col-1},rows:[{values:[cell_(value)]}],fields:'userEnteredValue'}};}
+function dateNumber_(ms) {return ms/86400000+25569+7/24;}
+
+function doPost(e) {
+  const lock=LockService.getScriptLock();
+  try {
+    const envelope=JSON.parse(e.postData.contents);
+    const props=PropertiesService.getScriptProperties();
+    const secret=props.getProperty('LOG_SECRET');
+    if (!secret || typeof envelope.payload!=='string' || envelope.payload.length>10000) return json_({ok:false});
+    const sig=hex_(Utilities.computeHmacSha256Signature(envelope.payload,secret,Utilities.Charset.UTF_8));
+    if (envelope.signature!==sig) return json_({ok:false});
+    const p=JSON.parse(envelope.payload);
+    if (!['no_match','system_error'].includes(p.reason) || typeof p.question!=='string' || !p.question.trim() || p.question.length>500 || !/^[a-f0-9]{64}$/.test(p.eventId) || !Number.isFinite(p.sentAt) || Math.abs(Date.now()-p.sentAt)>300000 || !Number.isFinite(p.timestamp) || p.timestamp<0 || p.timestamp>Date.now()+300000) return json_({ok:false});
+    lock.waitLock(10000);
+    const ss=SpreadsheetApp.openById(props.getProperty('LOG_SPREADSHEET_ID'));
+    const ledger=ss.getSheetByName(EVENT_TAB);
+    if (ledger.getLastRow()>1 && ledger.getRange(2,1,ledger.getLastRow()-1,1).createTextFinder(p.eventId).matchEntireCell(true).findNext()) return json_({ok:true,duplicate:true});
+    const sheet=ss.getSheetByName(LOG_TAB);
+    const day=Utilities.formatDate(new Date(p.timestamp),TZ,'yyyy-MM-dd');
+    const key=digest_(p.reason+'|'+p.question.normalize('NFC').toLowerCase().replace(/[\s\p{P}\p{S}]/gu,''));
+    const found=sheet.getLastRow()>1?sheet.getRange(2,7,sheet.getLastRow()-1,1).createTextFinder(key).matchEntireCell(true).findNext():null;
+    const fresh=!found;
+    const requests=[];
+    if (found) {
+      const row=found.getRow();
+      requests.push(put_(sheet,row,2,dateNumber_(p.timestamp)));
+      requests.push(put_(sheet,row,4,Number(sheet.getRange(row,4).getValue())+1));
+      const state=sheet.getRange(row,5).getValue();
+      if (state==='เพิ่มคำตอบแล้ว'||state==='แก้ไขระบบแล้ว') requests.push(put_(sheet,row,5,p.reason==='no_match'?'รอเพิ่มข้อมูล':'รอแก้ไขระบบ'));
+    } else requests.push(append_(sheet,[dateNumber_(p.timestamp),dateNumber_(p.timestamp),p.question,1,p.reason==='no_match'?'รอเพิ่มข้อมูล':'รอแก้ไขระบบ',reasonLabel_(p.reason),key]));
+    const daily=ss.getSheetByName(DAY_TAB);
+    const d=daily.getLastRow()>1?daily.getRange(2,1,daily.getLastRow()-1,1).createTextFinder(day).matchEntireCell(true).findNext():null;
+    if (d) {
+      const row=d.getRow();const col=p.reason==='no_match'?2:3;
+      requests.push(put_(daily,row,col,Number(daily.getRange(row,col).getValue())+1));
+      if (fresh) requests.push(put_(daily,row,4,Number(daily.getRange(row,4).getValue())+1));
+    } else requests.push(append_(daily,[day,p.reason==='no_match'?1:0,p.reason==='system_error'?1:0,fresh?1:0,'',Utilities.getUuid()]));
+    requests.push(append_(ledger,[p.eventId]));
+    // Atomic batch: counts and event receipt are committed together, including after a timeout/retry.
+    const write=UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/'+ss.getId()+':batchUpdate',{method:'post',contentType:'application/json',headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},payload:JSON.stringify({requests:requests}),muteHttpExceptions:true});
+    if(write.getResponseCode()!==200)throw new Error('sheet-write-failed');
+    return json_({ok:true});
+  } catch (_) {return json_({ok:false});}
+  finally {if(lock.hasLock()) lock.releaseLock();}
+}
+
+// Run once AFTER setting LINE_CHANNEL_ACCESS_TOKEN and ADMIN_GROUP_ID in Script properties.
+function installDailySummary() {
+  const p=PropertiesService.getScriptProperties();
+  if (!p.getProperty('LINE_CHANNEL_ACCESS_TOKEN') || !/^C[a-f0-9]{32}$/.test(p.getProperty('ADMIN_GROUP_ID')||'')) throw new Error('ตั้งค่า LINE_CHANNEL_ACCESS_TOKEN และ ADMIN_GROUP_ID ก่อน');
+  ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='sendDailySummary').forEach(t=>ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('sendDailySummary').timeBased().everyDays(1).atHour(8).inTimezone(TZ).create();
+}
+
+// Send complete previous-day totals. Apps Script runs approximately 08:00–09:00 Bangkok time.
+function sendDailySummary() {
+  const lock=LockService.getScriptLock();lock.waitLock(10000);
+  try {
+    const p=PropertiesService.getScriptProperties();
+    const token=p.getProperty('LINE_CHANNEL_ACCESS_TOKEN'),group=p.getProperty('ADMIN_GROUP_ID');
+    if (!token||!group) throw new Error('missing-summary-config');
+    const ss=SpreadsheetApp.openById(p.getProperty('LOG_SPREADSHEET_ID'));
+    const daily=ss.getSheetByName(DAY_TAB);
+    if(daily.getLastRow()<2)return;
+    const today=Utilities.formatDate(new Date(),TZ,'yyyy-MM-dd');
+    const rows=daily.getRange(2,1,daily.getLastRow()-1,6).getValues();
+    for(let index=0;index<rows.length;index++) {
+      const row=rows[index], day=String(row[0]);
+      if(day>=today||row[4])continue;
+      const text='สรุปน้องโพนต้า วันที่ '+day+'\nตอบไม่ได้ '+(Number(row[1])+Number(row[2]))+' ครั้ง\nไม่พบคำตอบที่ตรง '+row[1]+' ครั้ง\nระบบขัดข้อง '+row[2]+' ครั้ง\nพบคำถามใหม่ '+row[3]+' เรื่อง\nกรุณาตรวจสอบในชีตส่วนตัวค่ะ\n'+ss.getUrl();
+      const response=UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push',{method:'post',contentType:'application/json',headers:{Authorization:'Bearer '+token,'X-Line-Retry-Key':row[5]},payload:JSON.stringify({to:group,messages:[{type:'text',text}]}),muteHttpExceptions:true});
+      const code=response.getResponseCode();
+      if(code!==200&&code!==409)throw new Error('line-summary-failed:'+code);
+      daily.getRange(index+2,5).setValue(new Date());
+      SpreadsheetApp.flush();
+    }
+  } finally {lock.releaseLock();}
+}
