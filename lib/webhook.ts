@@ -1,9 +1,8 @@
 import { validateSignature, Client, type WebhookEvent } from '@line/bot-sdk';
 import { DEFAULT_REPLY, required, logError } from './config';
 import { getFAQ } from './sheet';
-import { answerQuestion } from './gemini';
+import { findAnswer } from './faq';
 export async function handleWebhook(request: Request): Promise<Response> {
-  const started=Date.now();
   let secret: string;
   try {secret=required('CHANNEL_SECRET');} catch {console.error('missing:CHANNEL_SECRET');return Response.json({error:'Configuration missing'},{status:500});}
   const raw=await request.text();
@@ -20,15 +19,15 @@ export async function handleWebhook(request: Request): Promise<Response> {
   if (!events.length) return Response.json({ok:true});
   const texts=events.filter(e=>e.type==='message' && e.message?.type==='text' && e.replyToken);
   if (!texts.length) return Response.json({ok:true});
-  try {for (const name of ['CHANNEL_ACCESS_TOKEN','Gemini_API_KEY','SHEET_CSV_URL']) required(name);} catch(error) {console.error(error instanceof Error ? error.message : 'missing-config');return new Response(null,{status:500});}
+  try {for (const name of ['CHANNEL_ACCESS_TOKEN','SHEET_CSV_URL']) required(name);} catch(error) {console.error(error instanceof Error ? error.message : 'missing-config');return new Response(null,{status:500});}
   const client=new Client({channelAccessToken:required('CHANNEL_ACCESS_TOKEN'),httpConfig:{timeout:2000}});
   const results=await Promise.all(texts.map(async event=>{
     if (event.type!=='message' || event.message.type!=='text') return true;
     let text=DEFAULT_REPLY;
     try {
       const faq=await getFAQ();
-      const remaining=7500-(Date.now()-started);
-      if (remaining>100 && event.message.text.length<=5000) text=await answerQuestion(event.message.text,faq,remaining);
+      text=findAnswer(event.message.text,faq);
+      console.info(JSON.stringify({service:'faq',rows:faq.length,matched:text!==DEFAULT_REPLY}));
     } catch(error) {logError('answer',error,[event.message.text]);}
     try {await client.replyMessage(event.replyToken,{type:'text',text});return true;}
     catch(error) {logError('line',error);return false;}
