@@ -69,3 +69,24 @@ test('group FAQ commands require both authorized group and individual admin',asy
     assert.equal(await supportCommand('Cgroup','Uadmin','/ตอบ abcdef123456 | คำถาม | คำตอบ'),'บันทึกแล้ว');assert.equal(calls,2);
   } finally {globalThis.fetch=original;for(const key of ['ADMIN_GROUP_ID','ADMIN_USER_IDS','UNANSWERED_LOG_URL','UNANSWERED_LOG_SECRET'])delete process.env[key];}
 });
+
+test('/my-id works in group and private chat without FAQ or admin settings, and never grants rights',async()=>{
+  process.env.CHANNEL_SECRET='identity-secret';process.env.CHANNEL_ACCESS_TOKEN='test-token';
+  delete process.env.SHEET_CSV_URL;delete process.env.ADMIN_USER_IDS;delete process.env.ADMIN_GROUP_ID;
+  const originalReply=Client.prototype.replyMessage,originalFetch=globalThis.fetch;
+  const replies:string[]=[];
+  Client.prototype.replyMessage=async function(_token,message:any){replies.push(message.text);return {};};
+  globalThis.fetch=async()=>{throw new Error('identity commands must not call FAQ or logger');};
+  async function send(source:object) {
+    const body=JSON.stringify({events:[{type:'message',source,replyToken:'reply',message:{type:'text',text:'/my-id'}}]});
+    return handleWebhook(new Request('https://example.org/api/webhook',{method:'POST',body,headers:{'x-line-signature':createHmac('sha256','identity-secret').update(body).digest('base64')}}));
+  }
+  try {
+    await send({type:'group',groupId:'Cgroup',userId:'Uself'});
+    await send({type:'user',userId:'Uprivate'});
+    await send({type:'group',groupId:'Cgroup'});
+    assert.equal(replies[0],'รหัสบัญชีของคุณ: Uself');assert.equal(replies[1],'รหัสบัญชีของคุณ: Uprivate');
+    assert.ok(replies[2].includes('LINE ไม่ได้ส่งรหัสบัญชี'));
+    assert.equal(process.env.ADMIN_USER_IDS,undefined);
+  } finally {Client.prototype.replyMessage=originalReply;globalThis.fetch=originalFetch;}
+});

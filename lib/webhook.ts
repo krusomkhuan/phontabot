@@ -21,10 +21,15 @@ export async function handleWebhook(request: Request): Promise<Response> {
   if (!events.length) return Response.json({ok:true});
   const texts=events.filter(e=>e.type==='message' && e.message?.type==='text' && e.replyToken);
   if (!texts.length) return Response.json({ok:true});
-  try {for (const name of ['CHANNEL_ACCESS_TOKEN','SHEET_CSV_URL']) required(name);} catch(error) {console.error(error instanceof Error ? error.message : 'missing-config');return new Response(null,{status:500});}
+  try {required('CHANNEL_ACCESS_TOKEN');} catch(error) {console.error(error instanceof Error ? error.message : 'missing-config');return new Response(null,{status:500});}
   const client=new Client({channelAccessToken:required('CHANNEL_ACCESS_TOKEN'),httpConfig:{timeout:2000}});
   const results=await Promise.all(texts.map(async event=>{
     if (event.type!=='message' || event.message.type!=='text') return true;
+    if(event.message.text.trim()==='/my-id') {
+      const userId=event.source?.userId;
+      const text=userId?`รหัสบัญชีของคุณ: ${userId}`:'LINE ไม่ได้ส่งรหัสบัญชีของผู้ส่งมาค่ะ กรุณาเพิ่มน้องโพนต้าเป็นเพื่อนแล้วส่ง /my-id ในแชตส่วนตัวอีกครั้ง';
+      try {await client.replyMessage(event.replyToken,{type:'text',text});return true;}catch(error){logError('line',error);return false;}
+    }
     // Group chats are for the support team, not another FAQ conversation.
     if (event.source?.type==='group' || event.source?.type==='room') {
       if (event.message.text.trim()==='/group-id' && event.source.type==='group') {
@@ -36,9 +41,6 @@ export async function handleWebhook(request: Request): Promise<Response> {
       return true;
     }
     let text=DEFAULT_REPLY;
-    if(event.source?.type==='user'&&event.message.text.trim()==='/my-id') {
-      try {await client.replyMessage(event.replyToken,{type:'text',text:`รหัสบัญชีของคุณ: ${event.source.userId}`});return true;}catch(error){logError('line',error);return false;}
-    }
     let reason: FailureReason='no_match';
     try {
       const faq=await getFAQ();

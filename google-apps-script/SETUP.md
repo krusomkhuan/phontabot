@@ -17,7 +17,7 @@
 
 ต้องระบุบัญชีผู้ดูแลทีละคน ไม่ให้สิทธิ์ทุกคนที่อยู่ในกลุ่มโดยอัตโนมัติ
 
-1. ผู้ดูแลแต่ละคนส่ง /my-id ในแชตส่วนตัวกับน้องโพนต้า จดรหัส U... ที่บอทตอบกลับ
+1. ผู้ดูแลแต่ละคนส่ง /my-id ในกลุ่มหรือแชตส่วนตัวกับน้องโพนต้า จดรหัส U... ที่บอทตอบกลับ
 2. ตั้ง ADMIN_USER_IDS เป็นรหัส U... ของผู้ดูแลที่ได้รับอนุญาต (คั่นด้วย comma หากหลายคน) ทั้งใน Vercel Production และ Script properties ค่าในสองที่ต้องตรงกัน ไม่ตั้งค่านี้เท่ากับปิดคำสั่งจัดการทั้งหมด
 3. ตั้ง ADMIN_GROUP_ID เป็นรหัสกลุ่ม C... ที่เลือก ทั้งใน Vercel Production และ Script properties จากนั้น Redeploy Vercel
 4. ตั้ง Script properties FAQ_SPREADSHEET_ID = 1z8s2vBfPcoiFlGaXLZYI8u0GBwTOBQ1x8dKl0MdOjjw และ FAQ_SHEET_ID = 0 บัญชีที่ Deploy Apps Script ต้องมีสิทธิ์แก้ไขไฟล์ FAQ เดิมด้วย ไม่เปลี่ยนสิทธิ์แชร์ไฟล์
