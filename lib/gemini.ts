@@ -16,7 +16,9 @@ export async function answerQuestion(question: string, faq: FAQ[], timeoutMs: nu
   let finishReason: string | null=null, thoughtsTokenCount: number | null=null, candidatesTokenCount: number | null=null;
   try {
     const ai = new GoogleGenAI({apiKey:required('Gemini_API_KEY')});
-    const result = await ai.models.generateContent({model:'gemini-3.5-flash',contents:`<faq>${escapeData(JSON.stringify(faq))}</faq>\n<question>${escapeData(question)}</question>`,config:{systemInstruction:SYSTEM_PROMPT,temperature:1.0,maxOutputTokens:1024,httpOptions:{timeout:timeoutMs}}});
+    // Google requires a server deadline >=10s. Enforce our shorter LINE budget
+    // with a client-only abort signal, without sending an invalid server deadline.
+    const result = await ai.models.generateContent({model:'gemini-3.5-flash',contents:`<faq>${escapeData(JSON.stringify(faq))}</faq>\n<question>${escapeData(question)}</question>`,config:{systemInstruction:SYSTEM_PROMPT,temperature:1.0,maxOutputTokens:1024,httpOptions:{timeout:10000},abortSignal:AbortSignal.timeout(Math.max(1,Math.floor(timeoutMs)))}});
     finishReason=result.candidates?.[0]?.finishReason ?? null;
     thoughtsTokenCount=result.usageMetadata?.thoughtsTokenCount ?? null;
     candidatesTokenCount=result.usageMetadata?.candidatesTokenCount ?? null;
