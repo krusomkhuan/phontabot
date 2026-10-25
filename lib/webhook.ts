@@ -2,7 +2,7 @@ import { validateSignature, Client, type WebhookEvent } from '@line/bot-sdk';
 import { DEFAULT_REPLY, required, logError } from './config';
 import { getFAQ } from './sheet';
 import { findAnswer } from './faq';
-import { recordUnanswered, type FailureReason } from './unanswered';
+import { recordUnanswered, supportCommand, type FailureReason } from './unanswered';
 import { createHash } from 'node:crypto';
 export async function handleWebhook(request: Request): Promise<Response> {
   let secret: string;
@@ -29,10 +29,16 @@ export async function handleWebhook(request: Request): Promise<Response> {
     if (event.source?.type==='group' || event.source?.type==='room') {
       if (event.message.text.trim()==='/group-id' && event.source.type==='group') {
         try {await client.replyMessage(event.replyToken,{type:'text',text:`รหัสกลุ่มนี้: ${event.source.groupId}`});} catch(error) {logError('line',error);return false;}
+      } else if(event.source.type==='group') {
+        const reply=await supportCommand(event.source.groupId,event.source.userId,event.message.text);
+        if(reply)try {await client.replyMessage(event.replyToken,{type:'text',text:reply});}catch(error){logError('line',error);return false;}
       }
       return true;
     }
     let text=DEFAULT_REPLY;
+    if(event.source?.type==='user'&&event.message.text.trim()==='/my-id') {
+      try {await client.replyMessage(event.replyToken,{type:'text',text:`รหัสบัญชีของคุณ: ${event.source.userId}`});return true;}catch(error){logError('line',error);return false;}
+    }
     let reason: FailureReason='no_match';
     try {
       const faq=await getFAQ();

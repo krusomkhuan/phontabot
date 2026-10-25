@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { recordUnanswered, redactQuestion } from '../lib/unanswered';
+import { recordUnanswered, redactQuestion, supportCommand } from '../lib/unanswered';
 import { handleWebhook } from '../lib/webhook';
 import { Client } from '@line/bot-sdk';
 
@@ -54,4 +54,18 @@ test('webhook logs unmatched questions vs outages after replying, without group-
     await handleWebhook(request({type:'group',groupId:'Ctest'}));assert.equal(reasons.length,2);assert.equal(replies,2);
     await handleWebhook(request({type:'group',groupId:'Ctest'},'/group-id'));assert.equal(replies,3);assert.equal(reasons.length,2);
   } finally {globalThis.fetch=origFetch;Client.prototype.replyMessage=origReply;delete process.env.UNANSWERED_LOG_URL;delete process.env.UNANSWERED_LOG_SECRET;}
+});
+
+test('group FAQ commands require both authorized group and individual admin',async()=>{
+  process.env.ADMIN_GROUP_ID='Cgroup';process.env.ADMIN_USER_IDS='Uadmin';
+  process.env.UNANSWERED_LOG_URL='https://script.google.com/macros/s/test/exec';process.env.UNANSWERED_LOG_SECRET='secret';
+  const original=globalThis.fetch;let calls=0;
+  globalThis.fetch=async(_url,options)=>{calls++;const p=JSON.parse(JSON.parse(String(options?.body)).payload);assert.equal(p.adminUserId,'Uadmin');assert.equal(p.groupId,'Cgroup');return Response.json({ok:true,reply:'บันทึกแล้ว'});};
+  try {
+    assert.equal(await supportCommand('Cgroup','Ustranger','/คำถามค้าง'),null);
+    assert.equal(await supportCommand('Cother','Uadmin','/คำถามค้าง'),null);
+    assert.equal(await supportCommand('Cgroup',undefined,'/คำถามค้าง'),null);assert.equal(calls,0);
+    assert.equal(await supportCommand('Cgroup','Uadmin','/คำถามค้าง'),'บันทึกแล้ว');
+    assert.equal(await supportCommand('Cgroup','Uadmin','/ตอบ abcdef123456 | คำถาม | คำตอบ'),'บันทึกแล้ว');assert.equal(calls,2);
+  } finally {globalThis.fetch=original;for(const key of ['ADMIN_GROUP_ID','ADMIN_USER_IDS','UNANSWERED_LOG_URL','UNANSWERED_LOG_SECRET'])delete process.env[key];}
 });

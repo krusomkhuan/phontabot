@@ -7,8 +7,9 @@ import vm from 'node:vm';
 test('Google receiver aggregates questions atomically, deduplicates events, rejects invalid requests, and summarizes once',()=>{
   const tables:any[]=[{id:1,name:'คำถามที่ยังตอบไม่ได้',rows:[['first','last','question','count','state','reason','key']]},
     {id:2,name:'สรุปรายวัน',rows:[['day','unknown','error','new','sent','retry']]},
-    {id:3,name:'ป้องกันนับซ้ำ',rows:[['event']]}];
-  const sheet=(table:any):any=>({getSheetId:()=>table.id,getLastRow:()=>table.rows.length,
+    {id:3,name:'ป้องกันนับซ้ำ',rows:[['event']]},
+    {id:4,name:'ชีต1',rows:[['หมวดหมู่','คำถาม','คำตอบ']]}];
+  const sheet=(table:any):any=>({getSheetId:()=>table.id,getLastRow:()=>table.rows.length,getDataRange:()=>({getValues:()=>table.rows}),
     getRange:(row:number,col:number,count=1,width=1)=>({getValue:()=>table.rows[row-1]?.[col-1],
       setValue:(v:any)=>{table.rows[row-1][col-1]=v;},
       getValues:()=>table.rows.slice(row-1,row-1+count).map((r:any[])=>r.slice(col-1,col-1+width)),
@@ -16,12 +17,13 @@ test('Google receiver aggregates questions atomically, deduplicates events, reje
         const index=table.rows.findIndex((r:any[],i:number)=>i>=row-1&&i<row-1+count&&String(r[col-1])===needle);
         return index<0?null:{getRow:()=>index+1};}})})})});
   const ss={getSheetByName:(n:string)=>sheet(tables.find(t=>t.name===n)),getId:()=>'private-file',getUrl:()=>'https://docs.google.com/spreadsheets/d/private-file'};
-  const props:any={LOG_SECRET:'test-secret',LOG_SPREADSHEET_ID:'private-file',LINE_CHANNEL_ACCESS_TOKEN:'test-token',ADMIN_GROUP_ID:'Ctest'};
+  const faqFile={getSheets:()=>[sheet(tables[3])],getUrl:()=>'https://docs.google.com/spreadsheets/d/faq-file'};
+  const props:any={LOG_SECRET:'test-secret',LOG_SPREADSHEET_ID:'private-file',LINE_CHANNEL_ACCESS_TOKEN:'test-token',ADMIN_GROUP_ID:'Ctest',ADMIN_USER_IDS:'Uadmin',FAQ_SPREADSHEET_ID:'faq-file',FAQ_SHEET_ID:'4'};
   let writes=0,pushes=0,locked=false,failWrite=false;
   const context=vm.createContext({console,Date,JSON,Math,Number,String,Error,
     PropertiesService:{getScriptProperties:()=>({getProperty:(n:string)=>props[n]})},
     LockService:{getScriptLock:()=>({waitLock:()=>{locked=true;},hasLock:()=>locked,releaseLock:()=>{locked=false;}})},
-    SpreadsheetApp:{openById:()=>ss,flush:()=>{}},ScriptApp:{getOAuthToken:()=>'test-oauth'},
+    SpreadsheetApp:{openById:(id:string)=>id==='faq-file'?faqFile:ss,flush:()=>{}},ScriptApp:{getOAuthToken:()=>'test-oauth'},
     ContentService:{MimeType:{JSON:'json'},createTextOutput:(s:string)=>({setMimeType:()=>JSON.parse(s)})},
     Utilities:{Charset:{UTF_8:'utf8'},DigestAlgorithm:{SHA_256:'sha256'},
       computeDigest:(_a:string,s:string)=>[...createHash('sha256').update(s).digest()],
@@ -54,5 +56,19 @@ test('Google receiver aggregates questions atomically, deduplicates events, reje
   failWrite=true;assert.equal(send('5','retry').ok,false);assert.equal(tables[2].rows.length,4);
   failWrite=false;
   context.sendDailySummary();assert.equal(pushes,1);context.sendDailySummary();assert.equal(pushes,1);
+  const command=(action:string,adminUserId='Uadmin',groupId='Ctest',extra:object={})=>{
+    const payload=JSON.stringify({action,adminUserId,groupId,sentAt:Date.now(),...extra});
+    return context.doPost({postData:{contents:JSON.stringify({payload,signature:createHmac('sha256','test-secret').update(payload).digest('hex')})}});
+  };
+  assert.equal(command('list','Ustranger').ok,false);
+  assert.equal(command('list','Uadmin','Cother').ok,false);
+  assert.ok(command('list').reply.includes('ถามแล้ว 2 ครั้ง'));
+  const item={id:tables[0].rows[1][6].slice(0,12),question:'คำถามใหม่',answer:'คำตอบที่ตรวจสอบแล้ว'};
+  assert.equal(command('answer','Ustranger','Ctest',item).ok,false);assert.equal(tables[3].rows.length,1);
+  assert.ok(command('answer','Uadmin','Ctest',item).reply.includes('เพิ่มคำตอบลง Google Sheet'));
+  assert.deepEqual(tables[3].rows[1],['เพิ่มเติมจากผู้ดูแล','คำถามใหม่','คำตอบที่ตรวจสอบแล้ว']);
+  assert.equal(tables[0].rows[1][4],'เพิ่มคำตอบแล้ว');
+  command('answer','Uadmin','Ctest',item);assert.equal(tables[3].rows.length,2);
+  assert.ok(command('answer','Uadmin','Ctest',{...item,answer:'คำตอบขัดกัน'}).reply.includes('คำตอบอื่น'));
   assert.equal(locked,false);
 });

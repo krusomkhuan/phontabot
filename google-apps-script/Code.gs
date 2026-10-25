@@ -49,6 +49,42 @@ function append_(sheet,values) {return {appendCells:{sheetId:sheet.getSheetId(),
 function put_(sheet,row,col,value) {return {updateCells:{start:{sheetId:sheet.getSheetId(),rowIndex:row-1,columnIndex:col-1},rows:[{values:[cell_(value)]}],fields:'userEnteredValue'}};}
 function dateNumber_(ms) {return ms/86400000+25569+7/24;}
 
+function support_(p,props) {
+  const admins=(props.getProperty('ADMIN_USER_IDS')||'').split(',').map(x=>x.trim()).filter(Boolean);
+  if(!p.adminUserId||!admins.includes(p.adminUserId)||!props.getProperty('ADMIN_GROUP_ID')||p.groupId!==props.getProperty('ADMIN_GROUP_ID'))return {ok:false};
+  const ss=SpreadsheetApp.openById(props.getProperty('LOG_SPREADSHEET_ID'));
+  const log=ss.getSheetByName(LOG_TAB);
+  const data=log.getLastRow()>1?log.getRange(2,1,log.getLastRow()-1,7).getValues():[];
+  if(p.action==='list') {
+    const pending=data.filter(r=>r[4]==='รอเพิ่มข้อมูล'&&r[5]==='ไม่พบคำตอบที่ตรง').sort((a,b)=>Number(b[3])-Number(a[3])).slice(0,5);
+    if(!pending.length)return {ok:true,reply:'ไม่มีคำถามรอเพิ่มข้อมูลค่ะ'};
+    return {ok:true,reply:'คำถามค้างที่มีคนถามบ่อย (สูงสุด 5 ข้อ)\n'+pending.map(r=>'รหัส '+String(r[6]).slice(0,12)+'\n'+String(r[2]).slice(0,300)+'\nถามแล้ว '+r[3]+' ครั้ง').join('\n\n')+'\n\nเพิ่มคำตอบด้วย\n/ตอบ รหัส | คำถามสำหรับ FAQ | คำตอบที่ตรวจสอบแล้ว\nคำถามและคำตอบจะเผยแพร่ใน FAQ สาธารณะ กรุณาตัดข้อมูลส่วนบุคคลก่อนส่งค่ะ'};
+  }
+  if(p.action!=='answer'||!/^[a-f0-9]{12}$/.test(p.id)||typeof p.question!=='string'||!p.question.trim()||p.question.length>500||typeof p.answer!=='string'||!p.answer.trim()||p.answer.length>4000)return {ok:false};
+  const matches=data.map((r,index)=>({r,index})).filter(x=>String(x.r[6]).startsWith(p.id));
+  if(matches.length!==1)return {ok:true,reply:'ไม่พบรหัสคำถามที่ตรงเพียงข้อเดียว กรุณาพิมพ์ /คำถามค้าง อีกครั้งค่ะ'};
+  const target=matches[0];
+  if(target.r[5]!=='ไม่พบคำตอบที่ตรง')return {ok:true,reply:'รายการนี้เป็นปัญหาระบบ ไม่ใช่คำถามที่รอเพิ่ม FAQ ค่ะ'};
+  const faqId=props.getProperty('FAQ_SPREADSHEET_ID');
+  if(!faqId)return {ok:true,reply:'ยังไม่ได้ตั้งค่า FAQ_SPREADSHEET_ID ค่ะ'};
+  const faqFile=SpreadsheetApp.openById(faqId);
+  const faq=faqFile.getSheets().find(s=>s.getSheetId()===Number(props.getProperty('FAQ_SHEET_ID')||'0'));
+  if(!faq)throw new Error('faq-tab-missing');
+  const rows=faq.getDataRange().getValues();
+  if(rows[0][0]!=='หมวดหมู่'||rows[0][1]!=='คำถาม'||rows[0][2]!=='คำตอบ')throw new Error('faq-headers-mismatch');
+  const normalize=q=>String(q).normalize('NFC').trim().toLowerCase().replace(/\s+/g,'');
+  const existing=rows.slice(1).filter(r=>normalize(r[1])===normalize(p.question));
+  if(existing.some(r=>String(r[2]).trim()!==p.answer.trim()))return {ok:true,reply:'คำถามนี้มีคำตอบอื่นใน FAQ แล้วค่ะ กรุณาตรวจแก้ในชีตโดยตรง เพื่อไม่ให้เกิดคำตอบขัดกัน'};
+  if(!existing.length) {
+    const write=UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/'+faqId+':batchUpdate',{method:'post',contentType:'application/json',headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},payload:JSON.stringify({requests:[append_(faq,['เพิ่มเติมจากผู้ดูแล',p.question.trim(),p.answer.trim()])]}),muteHttpExceptions:true});
+    if(write.getResponseCode()!==200)throw new Error('faq-write-failed');
+  }
+  // Retry after an interrupted write finds the existing FAQ, so no duplicate row is appended.
+  log.getRange(target.index+2,5).setValue('เพิ่มคำตอบแล้ว');
+  SpreadsheetApp.flush();
+  return {ok:true,reply:'เพิ่มคำตอบลง Google Sheet FAQ แล้วค่ะ\nคำถาม: '+p.question.trim()+'\nน้องโพนต้าจะอ่านข้อมูลใหม่ภายในประมาณ 60 วินาที\n'+faqFile.getUrl()};
+}
+
 function doPost(e) {
   const lock=LockService.getScriptLock();
   try {
@@ -59,6 +95,11 @@ function doPost(e) {
     const sig=hex_(Utilities.computeHmacSha256Signature(envelope.payload,secret,Utilities.Charset.UTF_8));
     if (envelope.signature!==sig) return json_({ok:false});
     const p=JSON.parse(envelope.payload);
+    if(!Number.isFinite(p.sentAt)||Math.abs(Date.now()-p.sentAt)>300000)return json_({ok:false});
+    if(p.action==='list'||p.action==='answer') {
+      lock.waitLock(10000);
+      return json_(support_(p,props));
+    }
     if (!['no_match','system_error'].includes(p.reason) || typeof p.question!=='string' || !p.question.trim() || p.question.length>500 || !/^[a-f0-9]{64}$/.test(p.eventId) || !Number.isFinite(p.sentAt) || Math.abs(Date.now()-p.sentAt)>300000 || !Number.isFinite(p.timestamp) || p.timestamp<0 || p.timestamp>Date.now()+300000) return json_({ok:false});
     lock.waitLock(10000);
     const ss=SpreadsheetApp.openById(props.getProperty('LOG_SPREADSHEET_ID'));
