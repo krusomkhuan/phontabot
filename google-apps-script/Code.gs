@@ -134,10 +134,10 @@ function doPost(e) {
   finally {if(lock.hasLock()) lock.releaseLock();}
 }
 
-// Run once AFTER setting LINE_CHANNEL_ACCESS_TOKEN and ADMIN_GROUP_ID in Script properties.
+// LINE token stays on Vercel. Apps Script sends a signed summary to the bot.
 function installDailySummary() {
   const p=PropertiesService.getScriptProperties();
-  if (!p.getProperty('LINE_CHANNEL_ACCESS_TOKEN') || !/^C[a-f0-9]{32}$/.test(p.getProperty('ADMIN_GROUP_ID')||'')) throw new Error('ตั้งค่า LINE_CHANNEL_ACCESS_TOKEN และ ADMIN_GROUP_ID ก่อน');
+  if (!p.getProperty('LOG_SECRET') || !/^C[a-f0-9]{32}$/.test(p.getProperty('ADMIN_GROUP_ID')||'')) throw new Error('ตั้งค่า LOG_SECRET และ ADMIN_GROUP_ID ก่อน');
   ScriptApp.getProjectTriggers().filter(t=>t.getHandlerFunction()==='sendDailySummary').forEach(t=>ScriptApp.deleteTrigger(t));
   ScriptApp.newTrigger('sendDailySummary').timeBased().everyDays(1).atHour(8).inTimezone(TZ).create();
 }
@@ -147,8 +147,8 @@ function sendDailySummary() {
   const lock=LockService.getScriptLock();lock.waitLock(10000);
   try {
     const p=PropertiesService.getScriptProperties();
-    const token=p.getProperty('LINE_CHANNEL_ACCESS_TOKEN'),group=p.getProperty('ADMIN_GROUP_ID');
-    if (!token||!group) throw new Error('missing-summary-config');
+    const secret=p.getProperty('LOG_SECRET'),group=p.getProperty('ADMIN_GROUP_ID');
+    if (!secret||!group) throw new Error('missing-summary-config');
     const ss=SpreadsheetApp.openById(p.getProperty('LOG_SPREADSHEET_ID'));
     const daily=ss.getSheetByName(DAY_TAB);
     if(daily.getLastRow()<2)return;
@@ -158,9 +158,11 @@ function sendDailySummary() {
       const row=rows[index], day=String(row[0]);
       if(day>=today||row[4])continue;
       const text='สรุปน้องโพนต้า วันที่ '+day+'\nตอบไม่ได้ '+(Number(row[1])+Number(row[2]))+' ครั้ง\nไม่พบคำตอบที่ตรง '+row[1]+' ครั้ง\nระบบขัดข้อง '+row[2]+' ครั้ง\nพบคำถามใหม่ '+row[3]+' เรื่อง\nกรุณาตรวจสอบในชีตส่วนตัวค่ะ\n'+ss.getUrl();
-      const response=UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push',{method:'post',contentType:'application/json',headers:{Authorization:'Bearer '+token,'X-Line-Retry-Key':row[5]},payload:JSON.stringify({to:group,messages:[{type:'text',text}]}),muteHttpExceptions:true});
+      const payload=JSON.stringify({groupId:group,text:text,retryKey:row[5],sentAt:Date.now()});
+      const signature=hex_(Utilities.computeHmacSha256Signature(payload,secret,Utilities.Charset.UTF_8));
+      const response=UrlFetchApp.fetch('https://phonta.vercel.app/api/support-summary',{method:'post',contentType:'application/json',payload:JSON.stringify({payload:payload,signature:signature}),muteHttpExceptions:true});
       const code=response.getResponseCode();
-      if(code!==200&&code!==409)throw new Error('line-summary-failed:'+code);
+      if(code!==200||JSON.parse(response.getContentText()).ok!==true)throw new Error('line-summary-failed:'+code);
       daily.getRange(index+2,5).setValue(new Date());
       SpreadsheetApp.flush();
     }

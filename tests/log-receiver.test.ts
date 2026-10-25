@@ -38,8 +38,8 @@ test('Google receiver aggregates questions atomically, deduplicates events, reje
           if(request.appendCells) {const x=request.appendCells;tables.find(t=>t.id===x.sheetId).rows.push(x.rows[0].values.map((v:any)=>Object.values(v.userEnteredValue)[0]));}
           if(request.updateCells) {const x=request.updateCells,s=x.start;tables.find(t=>t.id===s.sheetId).rows[s.rowIndex][s.columnIndex]=Object.values(x.rows[0].values[0].userEnteredValue)[0];}
         }
-      } else {pushes++;assert.ok(JSON.parse(options.payload).messages[0].text.includes('ตอบไม่ได้ 3 ครั้ง'));}
-      return {getResponseCode:()=>200};
+      } else {pushes++;assert.ok(JSON.parse(JSON.parse(options.payload).payload).text.includes('ตอบไม่ได้ 3 ครั้ง'));}
+      return {getResponseCode:()=>200,getContentText:()=>'{"ok":true}'};
     }}
   });
   vm.runInContext(readFileSync('google-apps-script/Code.gs','utf8'),context);
